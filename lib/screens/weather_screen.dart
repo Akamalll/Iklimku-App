@@ -6,6 +6,7 @@ import '../widgets/weather_card.dart';
 import '../widgets/forecast_card.dart';
 import '../widgets/forecast_detail_card.dart';
 import '../widgets/weather_analysis_card.dart';
+import 'dart:async';
 
 class WeatherScreen extends StatefulWidget {
   const WeatherScreen({super.key});
@@ -28,6 +29,10 @@ class _WeatherScreenState extends State<WeatherScreen>
   bool _isSearching = false;
   int _selectedForecastIndex = 0;
 
+  // Timer untuk auto refresh
+  Timer? _autoRefreshTimer;
+  static const Duration _autoRefreshInterval = Duration(minutes: 5);
+
   // Animation controllers untuk background
   late AnimationController _backgroundAnimationController;
   late Animation<double> _backgroundAnimation;
@@ -39,6 +44,9 @@ class _WeatherScreenState extends State<WeatherScreen>
   final ScrollController _scrollController = ScrollController();
   bool _isHeaderVisible = true;
   double _lastScrollPosition = 0;
+
+  // Current position untuk refresh
+  Map<String, double>? _currentPosition;
 
   @override
   void initState() {
@@ -62,13 +70,29 @@ class _WeatherScreenState extends State<WeatherScreen>
     _scrollController.addListener(_onScroll);
 
     _loadWeatherData();
+    _startAutoRefresh();
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     _backgroundAnimationController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _startAutoRefresh() {
+    _autoRefreshTimer?.cancel();
+    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (timer) {
+      if (_currentPosition != null && !_isLoading) {
+        print('Auto refreshing weather data...');
+        _refreshWeatherData();
+      }
+    });
+  }
+
+  void _stopAutoRefresh() {
+    _autoRefreshTimer?.cancel();
   }
 
   void _onScroll() {
@@ -107,31 +131,33 @@ class _WeatherScreenState extends State<WeatherScreen>
       final position = await _locationService.getCurrentLocation();
 
       if (position != null) {
+        _currentPosition = position;
+
         // Get location name
         _locationName = await _locationService.getLocationName(
           position['latitude']!,
           position['longitude']!,
         );
 
-        // Get weather data
-        final weather = await _weatherService.getCurrentWeather(
-          position['latitude']!,
-          position['longitude']!,
-        );
-
-        final forecast = await _weatherService.getDailyForecast(
+        // Get synchronized weather data (current + forecast)
+        final weatherData = await _weatherService.getSynchronizedWeatherData(
           position['latitude']!,
           position['longitude']!,
         );
 
         setState(() {
-          _currentWeather = weather;
-          _forecast = forecast;
+          _currentWeather = weatherData['current'] as WeatherModel;
+          _forecast = weatherData['forecast'] as List<DailyForecast>;
           _isLoading = false;
         });
 
         // Animate background change
         _animateBackgroundChange();
+
+        print('Weather data loaded successfully');
+        print('Current temperature: ${_currentWeather!.temperature}°C');
+        print(
+            'Today forecast: ${_forecast.first.maxTemp}°C / ${_forecast.first.minTemp}°C');
       } else {
         setState(() {
           _errorMessage = 'Tidak dapat mendapatkan lokasi';
@@ -143,6 +169,98 @@ class _WeatherScreenState extends State<WeatherScreen>
         _errorMessage = 'Error: $e';
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _refreshWeatherData() async {
+    if (_currentPosition == null) return;
+
+    try {
+      // Check if data needs refresh
+      if (_weatherService.needsRefresh) {
+        print('Data needs refresh, fetching from API...');
+
+        // Get synchronized weather data
+        final weatherData = await _weatherService.getSynchronizedWeatherData(
+          _currentPosition!['latitude']!,
+          _currentPosition!['longitude']!,
+          forceRefresh: true,
+        );
+
+        setState(() {
+          _currentWeather = weatherData['current'] as WeatherModel;
+          _forecast = weatherData['forecast'] as List<DailyForecast>;
+        });
+
+        // Animate background change
+        _animateBackgroundChange();
+
+        print('Weather data refreshed successfully');
+        print('Current temperature: ${_currentWeather!.temperature}°C');
+        print(
+            'Today forecast: ${_forecast.first.maxTemp}°C / ${_forecast.first.minTemp}°C');
+      } else {
+        print('Data is still fresh, no refresh needed');
+      }
+    } catch (e) {
+      print('Error refreshing weather data: $e');
+      // Don't show error to user for auto refresh
+    }
+  }
+
+  Future<void> _manualRefresh() async {
+    if (_currentPosition == null) {
+      await _loadWeatherData();
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      // Get synchronized weather data with force refresh
+      final weatherData = await _weatherService.getSynchronizedWeatherData(
+        _currentPosition!['latitude']!,
+        _currentPosition!['longitude']!,
+        forceRefresh: true,
+      );
+
+      setState(() {
+        _currentWeather = weatherData['current'] as WeatherModel;
+        _forecast = weatherData['forecast'] as List<DailyForecast>;
+        _isLoading = false;
+      });
+
+      // Animate background change
+      _animateBackgroundChange();
+
+      print('Manual refresh completed');
+      print('Current temperature: ${_currentWeather!.temperature}°C');
+      print(
+          'Today forecast: ${_forecast.first.maxTemp}°C / ${_forecast.first.minTemp}°C');
+
+      // Show success message
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Data cuaca berhasil diperbarui'),
+          duration: Duration(seconds: 2),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      setState(() {
+        _isLoading = false;
+      });
+
+      // Show error message
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal memperbarui data: $e'),
+          duration: const Duration(seconds: 3),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -181,25 +299,32 @@ class _WeatherScreenState extends State<WeatherScreen>
     });
 
     try {
-      final weather = await _weatherService.getCurrentWeather(
-        location.lat,
-        location.lon,
-      );
-
-      final forecast = await _weatherService.getDailyForecast(
+      // Get synchronized weather data for selected location
+      final weatherData = await _weatherService.getSynchronizedWeatherData(
         location.lat,
         location.lon,
       );
 
       setState(() {
-        _currentWeather = weather;
-        _forecast = forecast;
+        _currentWeather = weatherData['current'] as WeatherModel;
+        _forecast = weatherData['forecast'] as List<DailyForecast>;
         _locationName = location.displayName;
         _isLoading = false;
       });
 
+      // Update current position
+      _currentPosition = {
+        'latitude': location.lat,
+        'longitude': location.lon,
+      };
+
       // Animate background change
       _animateBackgroundChange();
+
+      print('Location changed to: ${location.displayName}');
+      print('Current temperature: ${_currentWeather!.temperature}°C');
+      print(
+          'Today forecast: ${_forecast.first.maxTemp}°C / ${_forecast.first.minTemp}°C');
     } catch (e) {
       setState(() {
         _errorMessage = 'Error: $e';
@@ -230,9 +355,7 @@ class _WeatherScreenState extends State<WeatherScreen>
           const Color(0xFFCFD8DC), // Abu-abu biru sangat muda
         ];
       } else if (description.contains('cerah') ||
-          description.contains('matahari') ||
-          description.contains('clear') ||
-          description.contains('sunny')) {
+          description.contains('matahari')) {
         if (hour >= 6 && hour <= 18) {
           // Siang hari - gradient matahari cerah
           return [
@@ -348,6 +471,29 @@ class _WeatherScreenState extends State<WeatherScreen>
       'Desember'
     ];
     return '${days[now.weekday - 1]}, ${now.day} ${months[now.month - 1]} ${now.year}';
+  }
+
+  String _getLastUpdateTime() {
+    if (_currentWeather != null) {
+      return _currentWeather!.lastUpdatedText;
+    }
+    final now = DateTime.now();
+    return '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+  }
+
+  bool _isDataConsistent() {
+    if (_currentWeather != null && _forecast.isNotEmpty) {
+      return _currentWeather!.temperature == _forecast.first.maxTemp &&
+          _currentWeather!.temperature == _forecast.first.minTemp;
+    }
+    return false;
+  }
+
+  double _getTemperatureDifference() {
+    if (_currentWeather != null && _forecast.isNotEmpty) {
+      return (_currentWeather!.temperature - _forecast.first.maxTemp).abs();
+    }
+    return 0.0;
   }
 
   @override
@@ -512,7 +658,7 @@ class _WeatherScreenState extends State<WeatherScreen>
                                     onExit: (_) => setState(
                                         () => _isRefreshHovered = false),
                                     child: IconButton(
-                                      onPressed: _loadWeatherData,
+                                      onPressed: _manualRefresh,
                                       icon: AnimatedRotation(
                                         turns: _isLoading ? 1 : 0,
                                         duration: const Duration(seconds: 1),
@@ -666,6 +812,94 @@ class _WeatherScreenState extends State<WeatherScreen>
               color: Colors.white,
               fontSize: 16,
               fontWeight: FontWeight.w500,
+            ),
+          ),
+
+          // Status sinkronisasi dan waktu terakhir diperbarui
+          Container(
+            margin: const EdgeInsets.symmetric(vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: Colors.white.withOpacity(0.3),
+                width: 1,
+              ),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _currentWeather != null && _currentWeather!.isDataFresh
+                          ? Icons.sync
+                          : Icons.sync_problem,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _currentWeather != null && _currentWeather!.isDataFresh
+                          ? 'Tersinkronisasi'
+                          : 'Perlu diperbarui',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '• Terakhir: ${_getLastUpdateTime()}',
+                      style: TextStyle(
+                        color: Colors.white.withOpacity(0.8),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+                // Indikator konsistensi data
+                if (_currentWeather != null && _forecast.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _isDataConsistent()
+                            ? Icons.check_circle
+                            : Icons.warning,
+                        color:
+                            _isDataConsistent() ? Colors.green : Colors.orange,
+                        size: 14,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        _isDataConsistent()
+                            ? 'Data konsisten'
+                            : 'Data tidak konsisten',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      if (!_isDataConsistent()) ...[
+                        const SizedBox(width: 6),
+                        Text(
+                          '(${_getTemperatureDifference()}°C)',
+                          style: TextStyle(
+                            color: Colors.orange,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+              ],
             ),
           ),
 

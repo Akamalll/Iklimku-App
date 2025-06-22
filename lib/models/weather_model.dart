@@ -7,6 +7,7 @@ class WeatherModel {
   final String icon;
   final DateTime date;
   final String location;
+  final DateTime lastUpdated;
 
   WeatherModel({
     required this.temperature,
@@ -17,7 +18,8 @@ class WeatherModel {
     required this.icon,
     required this.date,
     required this.location,
-  });
+    DateTime? lastUpdated,
+  }) : lastUpdated = lastUpdated ?? DateTime.now();
 
   factory WeatherModel.fromJson(Map<String, dynamic> json, String location) {
     return WeatherModel(
@@ -29,6 +31,7 @@ class WeatherModel {
       icon: json['weather'][0]['icon'],
       date: DateTime.fromMillisecondsSinceEpoch(json['dt'] * 1000),
       location: location,
+      lastUpdated: DateTime.now(),
     );
   }
 
@@ -37,6 +40,27 @@ class WeatherModel {
   String get humidityText => '$humidity%';
   String get windSpeedText => '${windSpeed.round()} km/h';
   String get descriptionText => description.capitalize();
+
+  String get lastUpdatedText {
+    final now = DateTime.now();
+    final difference = now.difference(lastUpdated);
+
+    if (difference.inMinutes < 1) {
+      return 'Baru saja';
+    } else if (difference.inMinutes < 60) {
+      return '${difference.inMinutes} menit yang lalu';
+    } else if (difference.inHours < 24) {
+      return '${difference.inHours} jam yang lalu';
+    } else {
+      return '${difference.inDays} hari yang lalu';
+    }
+  }
+
+  bool get isDataFresh {
+    final now = DateTime.now();
+    final difference = now.difference(lastUpdated);
+    return difference.inMinutes < 10;
+  }
 }
 
 class DailyForecast {
@@ -45,6 +69,7 @@ class DailyForecast {
   final double minTemp;
   final String description;
   final String icon;
+  final DateTime lastUpdated;
 
   DailyForecast({
     required this.date,
@@ -52,7 +77,8 @@ class DailyForecast {
     required this.minTemp,
     required this.description,
     required this.icon,
-  });
+    DateTime? lastUpdated,
+  }) : lastUpdated = lastUpdated ?? DateTime.now();
 
   factory DailyForecast.fromJson(Map<String, dynamic> json) {
     return DailyForecast(
@@ -61,6 +87,7 @@ class DailyForecast {
       minTemp: json['temp']['min'].toDouble(),
       description: json['weather'][0]['description'],
       icon: json['weather'][0]['icon'],
+      lastUpdated: DateTime.now(),
     );
   }
 
